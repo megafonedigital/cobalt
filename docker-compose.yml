@@ -1,0 +1,267 @@
+# Docker Compose configuration optimized for EasyPanel
+# This file is designed to work with EasyPanel's environment variable substitution
+# and networking requirements
+
+version: '3.8'
+
+services:
+  # Main Cobalt API service
+  cobalt-api:
+    image: ghcr.io/imputnet/cobalt:${COBALT_VERSION:-11}
+    container_name: cobalt-api
+    
+    # EasyPanel compatibility settings
+    init: true
+    read_only: true
+    restart: unless-stopped
+    
+    # Port configuration for EasyPanel
+    # EasyPanel uses Traefik as load balancer, so we only expose the service port
+    ports:
+      - "${API_PORT:-9000}"
+    
+    # Environment variables - all configurable through EasyPanel ENV panel
+    environment:
+      # Core API configuration
+      API_URL: "${API_URL}"
+      API_PORT: "${API_PORT:-9000}"
+      API_LISTEN_ADDRESS: "${API_LISTEN_ADDRESS:-0.0.0.0}"
+      
+      # CORS configuration
+      CORS_WILDCARD: "${CORS_WILDCARD:-1}"
+      CORS_URL: "${CORS_URL}"
+      
+      # Rate limiting
+      RATELIMIT_WINDOW: "${RATELIMIT_WINDOW:-60}"
+      RATELIMIT_MAX: "${RATELIMIT_MAX:-20}"
+      TUNNEL_RATELIMIT_WINDOW: "${TUNNEL_RATELIMIT_WINDOW:-60}"
+      TUNNEL_RATELIMIT_MAX: "${TUNNEL_RATELIMIT_MAX:-40}"
+      SESSION_RATELIMIT_WINDOW: "${SESSION_RATELIMIT_WINDOW:-60}"
+      SESSION_RATELIMIT_MAX: "${SESSION_RATELIMIT_MAX:-10}"
+      
+      # Content limits
+      DURATION_LIMIT: "${DURATION_LIMIT:-10800}"
+      TUNNEL_LIFESPAN: "${TUNNEL_LIFESPAN:-90}"
+      
+      # Authentication and security
+      TURNSTILE_SITEKEY: "${TURNSTILE_SITEKEY}"
+      TURNSTILE_SECRET: "${TURNSTILE_SECRET}"
+      JWT_SECRET: "${JWT_SECRET}"
+      JWT_EXPIRY: "${JWT_EXPIRY:-120}"
+      API_AUTH_REQUIRED: "${API_AUTH_REQUIRED:-0}"
+      API_KEY_URL: "${API_KEY_URL}"
+      
+      # Cookie support
+      COOKIE_PATH: "${COOKIE_PATH}"
+      
+      # YouTube specific settings
+      CUSTOM_INNERTUBE_CLIENT: "${CUSTOM_INNERTUBE_CLIENT}"
+      YOUTUBE_SESSION_SERVER: "${YOUTUBE_SESSION_SERVER}"
+      YOUTUBE_SESSION_INNERTUBE_CLIENT: "${YOUTUBE_SESSION_INNERTUBE_CLIENT}"
+      YOUTUBE_ALLOW_BETTER_AUDIO: "${YOUTUBE_ALLOW_BETTER_AUDIO:-1}"
+      ENABLE_DEPRECATED_YOUTUBE_HLS: "${ENABLE_DEPRECATED_YOUTUBE_HLS:-never}"
+      
+      # Processing settings
+      FORCE_LOCAL_PROCESSING: "${FORCE_LOCAL_PROCESSING:-never}"
+      PROCESSING_PRIORITY: "${PROCESSING_PRIORITY}"
+      
+      # Service configuration
+      DISABLED_SERVICES: "${DISABLED_SERVICES}"
+      
+      # Proxy settings
+      API_EXTERNAL_PROXY: "${API_EXTERNAL_PROXY}"
+      HTTP_PROXY: "${HTTP_PROXY}"
+      HTTPS_PROXY: "${HTTPS_PROXY}"
+      NO_PROXY: "${NO_PROXY}"
+      
+      # Redis configuration (for clustering)
+      API_REDIS_URL: "${API_REDIS_URL}"
+      API_INSTANCE_COUNT: "${API_INSTANCE_COUNT:-1}"
+      
+      # Environment file support
+      API_ENV_FILE: "${API_ENV_FILE}"
+      
+      # Linux-specific settings
+      FREEBIND_CIDR: "${FREEBIND_CIDR}"
+    
+    # Volume mounts for data persistence
+    volumes:
+      # Cookie file for authenticated services (optional)
+      - type: bind
+        source: "${COOKIE_FILE_PATH:-./cookies.json}"
+        target: "/cookies.json"
+        read_only: true
+        bind:
+          create_host_path: false
+      # Persistent data volume
+      - cobalt-data:/app/data
+      # Logs volume
+      - cobalt-logs:/app/logs
+    
+    # Health check
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:${API_PORT:-9000}/api/serverInfo"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    
+    # Resource limits (configurable)
+    deploy:
+      resources:
+        limits:
+          memory: "${MEMORY_LIMIT:-1G}"
+          cpus: "${CPU_LIMIT:-1.0}"
+        reservations:
+          memory: "${MEMORY_RESERVATION:-512M}"
+          cpus: "${CPU_RESERVATION:-0.5}"
+    
+    # Labels for EasyPanel integration
+    labels:
+      - "com.centurylinklabs.watchtower.scope=cobalt"
+      - "easypanel.service=cobalt-api"
+      - "easypanel.domain=${PRIMARY_DOMAIN}"
+  
+  # Redis service (optional, for clustering)
+  redis:
+    image: redis:${REDIS_VERSION:-7-alpine}
+    container_name: cobalt-redis
+    restart: unless-stopped
+    
+    # Redis configuration
+    command: >
+      redis-server
+      --requirepass ${REDIS_PASSWORD}
+      --maxmemory ${REDIS_MAX_MEMORY:-256mb}
+      --maxmemory-policy allkeys-lru
+      --save 900 1
+      --save 300 10
+      --save 60 10000
+    
+    # Redis port (internal only)
+    ports:
+      - "6379"
+    
+    # Redis data persistence
+    volumes:
+      - redis-data:/data
+      - redis-config:/usr/local/etc/redis
+    
+    # Health check for Redis
+    healthcheck:
+      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
+      interval: 30s
+      timeout: 3s
+      retries: 5
+    
+    # Resource limits for Redis
+    deploy:
+      resources:
+        limits:
+          memory: "${REDIS_MEMORY_LIMIT:-512M}"
+          cpus: "${REDIS_CPU_LIMIT:-0.5}"
+    
+    # Labels
+    labels:
+      - "easypanel.service=redis"
+    
+    # Only start if Redis is enabled
+    profiles:
+      - redis
+  
+  # YouTube Session Generator (optional)
+  yt-session-generator:
+    image: ghcr.io/imputnet/yt-session-generator:${YT_SESSION_VERSION:-webserver}
+    container_name: yt-session-generator
+    
+    init: true
+    restart: unless-stopped
+    
+    # Port for session generator
+    ports:
+      - "${YT_SESSION_PORT:-8080}"
+    
+    # Environment for session generator
+    environment:
+      PORT: "${YT_SESSION_PORT:-8080}"
+      YOUTUBE_SESSION_REFRESH_INTERVAL: "${YT_SESSION_REFRESH_INTERVAL:-3600}"
+    
+    # Health check
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:${YT_SESSION_PORT:-8080}/health"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+    
+    # Labels
+    labels:
+      - "com.centurylinklabs.watchtower.scope=cobalt"
+      - "easypanel.service=yt-session-generator"
+    
+    # Only start if YouTube session generator is enabled
+    profiles:
+      - youtube-session
+  
+  # Watchtower for automatic updates (optional)
+  watchtower:
+    image: ghcr.io/containrrr/watchtower:${WATCHTOWER_VERSION:-latest}
+    container_name: cobalt-watchtower
+    restart: unless-stopped
+    
+    # Watchtower configuration
+    command: >
+      --cleanup
+      --scope cobalt
+      --interval ${WATCHTOWER_INTERVAL:-900}
+      --include-restarting
+      --rolling-restart
+    
+    # Docker socket access
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    
+    # Environment
+    environment:
+      WATCHTOWER_NOTIFICATIONS: "${WATCHTOWER_NOTIFICATIONS}"
+      WATCHTOWER_NOTIFICATION_URL: "${WATCHTOWER_NOTIFICATION_URL}"
+      WATCHTOWER_SCHEDULE: "${WATCHTOWER_SCHEDULE}"
+    
+    # Labels
+    labels:
+      - "easypanel.service=watchtower"
+    
+    # Only start if auto-updates are enabled
+    profiles:
+      - auto-update
+
+# Named volumes for data persistence
+# EasyPanel will manage these volumes automatically
+volumes:
+  cobalt-data:
+    driver: local
+    labels:
+      - "easypanel.volume=cobalt-data"
+  
+  cobalt-logs:
+    driver: local
+    labels:
+      - "easypanel.volume=cobalt-logs"
+  
+  redis-data:
+    driver: local
+    labels:
+      - "easypanel.volume=redis-data"
+  
+  redis-config:
+    driver: local
+    labels:
+      - "easypanel.volume=redis-config"
+
+# Network configuration
+# EasyPanel manages networking automatically, but we define it for clarity
+networks:
+  default:
+    name: cobalt-network
+    driver: bridge
+    labels:
+      - "easypanel.network=cobalt"
