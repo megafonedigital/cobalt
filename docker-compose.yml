@@ -87,12 +87,13 @@ services:
     # Volume mounts for data persistence
     volumes:
       # Cookie file for authenticated services (optional)
+      # Only mount if COOKIE_FILE_PATH is explicitly set
       - type: bind
         source: "${COOKIE_FILE_PATH:-./cookies.json}"
         target: "/cookies.json"
         read_only: true
         bind:
-          create_host_path: false
+          create_host_path: true
       # Persistent data volume
       - cobalt-data:/app/data
       # Logs volume
